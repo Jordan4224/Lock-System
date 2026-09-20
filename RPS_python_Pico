@@ -1,0 +1,89 @@
+from machine import Pin
+import random
+import time
+
+# Wiring: 3.3V -> button -> GP pin, so the internal pull-down holds the pin low
+ROCK, PAPER, SCISSORS = 1, 2, 3
+NAMES = {ROCK: "rock", PAPER: "paper", SCISSORS: "scissors"}
+
+choicePins = {
+    ROCK: Pin(1, Pin.IN, Pin.PULL_DOWN),      # GP1
+    PAPER: Pin(2, Pin.IN, Pin.PULL_DOWN),     # GP2
+    SCISSORS: Pin(3, Pin.IN, Pin.PULL_DOWN),  # GP3
+}
+resetPin = Pin(4, Pin.IN, Pin.PULL_DOWN)      # GP4: reset score
+
+wins = 0
+losses = 0
+ties = 0
+
+
+def waitRelease(pin):
+    while pin.value():
+        time.sleep_ms(10)
+    time.sleep_ms(20)  # release debounce
+
+
+def resetScore():
+    global wins, losses, ties
+    wins = losses = ties = 0
+    print("Score reset")
+
+
+def getComputerChoice():
+    random.seed(time.ticks_us())  # seeded by button-press timing, like srand()
+    return random.randint(1, 3)
+
+
+def getUserChoice():
+    print("Choose an option")
+    print("1. Rock (GP1)")
+    print("2. Paper (GP2)")
+    print("3. Scissors (GP3)")
+    print("GP4 resets the score")
+    while True:
+        if resetPin.value():
+            resetScore()
+            waitRelease(resetPin)
+        for choice, pin in choicePins.items():
+            if pin.value():
+                time.sleep_ms(20)  # press debounce
+                if pin.value():
+                    waitRelease(pin)
+                    return choice
+        time.sleep_ms(5)
+
+
+def checkWinner(userChoice, computerChoice):
+    global wins, losses, ties
+    if userChoice == computerChoice:
+        ties += 1
+        print("It's a tie")
+    elif userChoice == ROCK and computerChoice == SCISSORS:
+        wins += 1
+        print("You win")
+    elif userChoice == PAPER and computerChoice == ROCK:
+        wins += 1
+        print("You win")
+    elif userChoice == SCISSORS and computerChoice == PAPER:
+        wins += 1
+        print("You win")
+    else:
+        losses += 1
+        print("You lose")
+
+
+def main():
+    print("Rock Paper Scissors")
+    while True:
+        userChoice = getUserChoice()
+        computerChoice = getComputerChoice()
+
+        print("You chose", NAMES[userChoice])
+        print("Computer chose", NAMES[computerChoice])
+
+        checkWinner(userChoice, computerChoice)
+        print("W:%d L:%d T:%d\n" % (wins, losses, ties))
+
+
+main()
