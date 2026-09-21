@@ -1,0 +1,148 @@
+# Deadbolt Controller — Pseudocode
+
+## 1. lock_state_machine (the core logic)
+CONSTANTS:
+    RELOCK_CONFIRM_DELAY = 10 seconds
+    POST_UNLOCK_COOLDOWN = 10 seconds
+
+STATE MACHINE:
+    state = LOCKED
+    last_recorded = TRUE
+    next_read_allowed_at = 0
+    pending_since = none
+
+FUNCTION on_fob_presented():
+    retract the deadbolt
+    state = UNLOCKED
+    last_recorded = FALSE
+    pending_since = none
+    next_read_allowed_at = now + POST_UNLOCK_COOLDOWN
+
+FUNCTION on_sensor_read(value):
+    now = current time
+
+    IF state == LOCKED:
+        last_recorded = value
+        RETURN
+
+    IF state == UNLOCKED:
+        IF now < next_read_allowed_at:
+            RETURN                          # still inside cooldown, ignore
+        IF value == FALSE:
+            last_recorded = FALSE
+            RETURN                          # door still open
+        state = PENDING_RELOCK
+        pending_since = now
+        RETURN
+
+    IF state == PENDING_RELOCK:
+        IF (now - pending_since) < RELOCK_CONFIRM_DELAY:
+            RETURN                          # still waiting out the 10s
+        IF value == TRUE:
+            extend the deadbolt
+            state = LOCKED
+            last_recorded = TRUE
+        ELSE:
+            state = UNLOCKED
+            last_recorded = FALSE
+            next_read_allowed_at = now       # re-check immediately
+        pending_since = none
+        RETURN
+
+## 2. Main python file (what actually runs on the Pico)
+
+SET UP PINS:
+    light sensor pin = input
+    fob receiver pin = input
+    step pin = output
+    direction pin = output
+    enable pin = output, turn driver on
+
+WHEN fob pin goes HIGH:
+    set a flag saying "fob seen"
+
+FUNCTION step_motor(number_of_steps, direction):
+    set direction pin
+    pulse the step pin that many times
+    stop pulsing
+
+FUNCTION retract_deadbolt():
+    step_motor(STEPS_PER_MOVE, direction = open)
+
+FUNCTION extend_deadbolt():
+    step_motor(STEPS_PER_MOVE, direction = closed)
+
+CREATE state machine, using retract_deadbolt / extend_deadbolt as its motor actions
+
+LOOP FOREVER:
+    IF "fob seen" flag is set:
+        clear the flag
+        state_machine.on_fob_presented()
+
+    reading = read light sensor pin
+    state_machine.on_sensor_read(reading)
+
+    wait 0.1 seconds
+
+
+## 3. test_desktop_sim (manual testing tool, runs on a laptop, no hardware)
+
+fake_clock = 0
+
+FUNCTION on_retract(): PRINT "motor retracts"
+FUNCTION on_extend():  PRINT "motor extends"
+
+CREATE state machine using fake_clock, on_retract, on_extend
+
+LOOP FOREVER:
+    PRINT current state
+    ASK user for a command:
+        "t" -> state_machine.on_sensor_read(TRUE)
+        "f" -> state_machine.on_sensor_read(FALSE)
+        "b" -> state_machine.on_fob_presented()
+        "a" -> fake_clock = fake_clock + 10
+        "q" -> STOP
+    PRINT new state
+
+
+## 4. test_logic (automated checks, no hardware, no typing required)
+
+TEST "starts locked and stays locked":
+    read sensor TRUE
+    CHECK state == LOCKED
+
+TEST "fob retracts immediately":
+    present fob
+    CHECK state == UNLOCKED
+    CHECK motor retracted
+
+TEST "sensor reads are ignored for 10s after unlock":
+    present fob
+    read sensor FALSE           -> CHECK state still UNLOCKED (ignored)
+    advance clock 5s
+    read sensor TRUE            -> CHECK state still UNLOCKED (still cooling down)
+    advance clock 6s (11s total)
+    read sensor TRUE            -> CHECK state == PENDING_RELOCK
+
+TEST "relock needs two TRUE reads 10s apart":
+    present fob
+    advance clock 10s
+    read sensor TRUE            -> CHECK state == PENDING_RELOCK
+    read sensor TRUE again immediately -> CHECK state still PENDING_RELOCK (too soon)
+    advance clock 10s
+    read sensor TRUE            -> CHECK state == LOCKED, motor extended
+
+TEST "door reopening cancels the relock":
+    present fob
+    advance clock 10s
+    read sensor TRUE            -> now PENDING_RELOCK
+    advance clock 10s
+    read sensor FALSE           -> CHECK state back to UNLOCKED, motor never extended
+
+TEST "FALSE reads while unlocked do nothing":
+    present fob
+    advance clock 10s
+    read sensor FALSE, five times in a row
+    CHECK state still UNLOCKED, motor only ever retracted once
+
+RUN all tests, PRINT pass/fail for each
